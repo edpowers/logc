@@ -4,6 +4,7 @@ import inspect
 import logging
 import re
 import traceback
+from functools import wraps
 from pprint import pformat
 from typing import Any, Dict, Optional, Union
 
@@ -17,32 +18,18 @@ class LoggerConfig(BaseModel):
     isp: bool = Field(default=False, description="If True, print on server side.")
     verbose: bool = Field(default=True, description="If True, print message.")
     debug: bool = Field(default=True, description="If False, exit function.")
-    to_log_msgs: bool = Field(
-        default=False, description="If True, print message to log file."
-    )
-    return_format_str: bool = Field(
-        default=False, description="If True, return formatted string."
-    )
+    to_log_msgs: bool = Field(default=False, description="If True, print message to log file.")
+    return_format_str: bool = Field(default=False, description="If True, return formatted string.")
     error: Union[bool, Exception] = Field(
         default=False,
         description="If True or Exception, print type and message of error.",
     )
     trace: str = Field(default="", description="Traceback to print.")
-    log_level: Union[str, int] = Field(
-        default=logging.DEBUG, description="Level of message."
-    )
-    custom_logger: Optional[logging.Logger] = Field(
-        default=None, description="Custom logger to use."
-    )
-    logger_name: Optional[str] = Field(
-        default=None, description="Name of logger to use."
-    )
-    show_code_lines: bool = Field(
-        default=True, description="If True, print code stack hierarchy."
-    )
-    disable_printing_server_tasks: bool = Field(
-        default=False, description="If True, disable printing server tasks."
-    )
+    log_level: Union[str, int] = Field(default=logging.DEBUG, description="Level of message.")
+    custom_logger: Optional[logging.Logger] = Field(default=None, description="Custom logger to use.")
+    logger_name: Optional[str] = Field(default=None, description="Name of logger to use.")
+    show_code_lines: bool = Field(default=True, description="If True, print code stack hierarchy.")
+    disable_printing_server_tasks: bool = Field(default=False, description="If True, disable printing server tasks.")
 
     @field_validator("log_level")
     @classmethod
@@ -53,9 +40,7 @@ class LoggerConfig(BaseModel):
         arbitrary_types_allowed = True
 
     @classmethod
-    def create_custom_logger(
-        cls, name: str, level: Union[str, int] = logging.DEBUG
-    ) -> logging.Logger:
+    def create_custom_logger(cls, name: str, level: Union[str, int] = logging.DEBUG) -> logging.Logger:
         """Create and configure a custom logger."""
         logger = logging.getLogger(name)
         logger.setLevel(map_log_level(level))
@@ -63,9 +48,7 @@ class LoggerConfig(BaseModel):
         if not logger.handlers:
             console_handler = logging.StreamHandler()
             console_handler.setLevel(logging.DEBUG)
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
+            formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
             console_handler.setFormatter(formatter)
             logger.addHandler(console_handler)
 
@@ -88,12 +71,13 @@ def log(config: LoggerConfig) -> Optional[str]:
     msg = f"{argp}{arg} \n {config.trace}"
 
     logger = config.custom_logger or logging.getLogger(config.logger_name or "root")
-    log_level = config.log_level
+    log_level = map_log_level(config.log_level)
 
     if isinstance(config.error, Exception):
         logger.error(msg)
     else:
-        logger.log(log_level, msg)
+        log_method = getattr(logger, logging.getLevelName(log_level).lower())
+        log_method(msg)
 
     return msg if config.return_format_str else None
 
@@ -102,7 +86,11 @@ def should_skip_logging(config: LoggerConfig) -> bool:
     """Check if logging should be skipped."""
     if config.to_log_msgs or config.custom_logger or config.logger_name:
         return False
-    return not config.verbose or not config.debug
+    if not config.verbose:
+        return True
+    if not config.debug:
+        return map_log_level(config.log_level) < logging.INFO
+    return False
 
 
 def format_arg(config: LoggerConfig) -> str:
@@ -142,9 +130,7 @@ def format_code_lines(config: LoggerConfig) -> str:
     if not config.show_code_lines:
         return ""
     func_n_d = get_parent_function_names()
-    argp = ".".join(
-        list(map(reduce_if_current_name, reversed(list(func_n_d.values()))))
-    )
+    argp = ".".join(list(map(reduce_if_current_name, reversed(list(func_n_d.values())))))
     return f"{argp}: \n"
 
 
@@ -176,6 +162,8 @@ def map_log_level(log_level: Union[str, int]) -> Union[str, int]:
         log_level = logging.WARNING
     elif log_level == "error":
         log_level = logging.ERROR
+    elif log_level == "critical":
+        log_level = logging.CRITICAL
 
     return log_level
 
@@ -202,9 +190,7 @@ def get_parent_function_names(max_depth: int = 4) -> Dict[str, str]:
     func_names = ["func_parent", "func_gparent", "func_ggparent", "func_gggparent"]
     func_info = {}
 
-    for i in range(
-        2, min(6, max_depth + 2)
-    ):  # Start from 2 to skip the current function
+    for i in range(2, min(6, max_depth + 2)):  # Start from 2 to skip the current function
         try:
             frame = inspect.currentframe().f_back
             for _ in range(i - 1):
@@ -216,9 +202,7 @@ def get_parent_function_names(max_depth: int = 4) -> Dict[str, str]:
 
             if func_val_str not in func_info.values():
                 name = func_names[i - 2]
-                func_info[name] = (
-                    f"{func_val_str}\n" if name == "func_parent" else func_val_str
-                )
+                func_info[name] = f"{func_val_str}\n" if name == "func_parent" else func_val_str
         except AttributeError:
             break  # Stop if we've reached the top of the call stack
 
@@ -236,9 +220,7 @@ def return_custom_logger(config: LoggerConfig) -> logging.Logger:
     if not custom_logger.handlers:
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         console_handler.setFormatter(formatter)
         custom_logger.addHandler(console_handler)
 
@@ -261,22 +243,53 @@ def format_log_message(func_name: str, msg: str) -> str:
 
 
 # Monkey-patch logging.Logger to use our custom formatting
+original_methods = {}
+
+
 def patch_logger_methods():
-    if not hasattr(logging.Logger, "_original_log"):
-        logging.Logger._original_log = logging.Logger._log
+    global original_methods
+    original_methods = {
+        "debug": logging.Logger.debug,
+        "info": logging.Logger.info,
+        "warning": logging.Logger.warning,
+        "error": logging.Logger.error,
+        "critical": logging.Logger.critical,
+    }
 
-    def custom_log(self, level, msg, args, **kwargs):
-        if getattr(self, "_in_custom_log", False):
-            # Prevent recursion
-            return logging.Logger._original_log(self, level, msg, args, **kwargs)
-
-        self._in_custom_log = True
-        try:
-            formatted_msg = format_log_message(self.name, msg)
-            return logging.Logger._original_log(
-                self, level, formatted_msg, args, **kwargs
+    def patch_method(level):
+        @wraps(original_methods[level])
+        def wrapper(self, msg, *args, **kwargs):
+            log(
+                LoggerConfig(
+                    arg=msg,
+                    log_level=getattr(logging, level.upper()),
+                    custom_logger=self,
+                )
             )
-        finally:
-            self._in_custom_log = False
+            return original_methods[level](self, msg, *args, **kwargs)
 
-    logging.Logger._log = custom_log
+        return wrapper
+
+    logging.Logger.debug = patch_method("debug")
+    logging.Logger.info = patch_method("info")
+    logging.Logger.warning = patch_method("warning")
+    logging.Logger.error = patch_method("error")
+    logging.Logger.critical = patch_method("critical")
+
+
+def unpatch_logger_methods():
+    global original_methods
+    if original_methods:
+        for level, method in original_methods.items():
+            setattr(logging.Logger, level, method)
+        original_methods.clear()
+
+
+# Context manager for patching
+class LoggerPatcher:
+    def __enter__(self):
+        patch_logger_methods()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        unpatch_logger_methods()
